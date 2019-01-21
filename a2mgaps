@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+#
+# a2mgaps
+# Copyright: (C) 2019 University of Tübingen, Germany
+# Author: Leon Kuchenbecker
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+import sys
+import io
+import argparse
+from pathlib import Path
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from Bio import SeqIO
+
+class A2MParseError(RuntimeError) : pass
+
+####################################################################################################
+# USER INTERFACE
+####################################################################################################
+
+parser = argparse.ArgumentParser(description='Generate gap plots from FASTA / A2M alignment files')
+parser.add_argument('--allcols', dest='allcols', action='store_true', help = "Include all columns in the plot (also lower case characters)")
+parser.add_argument('--cpos', dest='cpos', type=int, nargs='+', help = "Concatenation position(s) for concatenated MSAs.")
+parser.add_argument('outfile', metavar = 'outfile', type=str,
+                    help='PDF output file')
+parser.add_argument('infiles', metavar='infiles', type=argparse.FileType('r'), nargs='+',
+                    help='Input files in FASTA / A2M format')
+args = parser.parse_args()
+
+####################################################################################################
+# READ AND CHECK INPUT DATA
+####################################################################################################
+
+def path_from_inoutfile(infile):
+    return infile.name if isinstance(infile, io.TextIOWrapper) else inpath
+
+def read_input_file(infile):
+    aln = list(SeqIO.parse(infile, "fasta"))
+    inpath = path_from_inoutfile(infile)
+    if not aln:
+        raise A2MParseError("No sequences found in input file '" + inpath + "'")
+
+    seq_len = None
+    for rec in aln:
+        if seq_len is None:
+            seq_len = len(rec.seq)
+        else:
+            if seq_len != len(rec.seq):
+                raise A2MParseError("Non-uniform lengths in input file '" + inpath + "'")
+
+    print(inpath + ' has ' + str(len(aln)) + ' rows and ' + str(seq_len) + ' columns.', file=sys.stderr)
+    return aln
+
+
+####################################################################################################
+# COUNT GAPS
+####################################################################################################
+
+def id_gaps(row):
+    return np.array([ (lambda x : x in ['-','.'])(x) for x in row])
+
+def lead_gaps(gaps):
+    return np.cumsum(gaps == False) == 0
+
+def lead_trail_gaps(gaps):
+    lg = lead_gaps(gaps)
+    tg = np.flip(lead_gaps(np.flip(gaps, axis = 0)), axis = 0)
+    return lg | tg
+
+def split_gaps(any_gaps):
+    lt_gaps      = np.apply_along_axis(lead_trail_gaps, 1, any_gaps)
+    non_lt_gaps  = np.apply_along_axis(sum, 0, any_gaps)
+    lt_gaps      = np.apply_along_axis(sum, 0, lt_gaps)
+    non_lt_gaps -= lt_gaps
+    return non_lt_gaps, lt_gaps
+
+def gen_gap_stats(aln, cpos):
+    any_gaps     = np.asanyarray([ id_gaps(rec.seq) for rec in aln ])
+    if cpos:
+        cpos = [0] + [ elem for elem in cpos if elem != 0 and elem != any_gaps.shape[1] ]+ [any_gaps.shape[1]]
+        any_gaps = [ any_gaps[:,f:t] for f,t in zip(cpos, cpos[1:]) ]
+    else:
+        any_gaps = [ any_gaps ]
+
+    s_gaps = [ split_gaps(any_gaps_block) for any_gaps_block in any_gaps ]
+
+    return np.concatenate([ elem[0] for elem in s_gaps]), np.concatenate([ elem[1] for elem in s_gaps])
+
+####################################################################################################
+# PLOT GAP STATISTICS
+####################################################################################################
+
+def gen_plot(nlt, lt, max_count, infile, pdf, splits = None):
+    plt.figure(figsize=(len(nlt)*0.125,10))
+    plt.subplots_adjust(
+            left  = 0.02,  # the left side of the subplots of the figure
+            right = 0.98,    # the right side of the subplots of the figure
+            bottom = 0.1,   # the bottom of the subplots of the figure
+            top = 0.9,      # the top of the subplots of the figure
+            wspace = 0.2,   # the amount of width reserved for space between subplots,
+            # expressed as a fraction of the average axis width
+            hspace = 0.2,  # the amount of height reserved for space between subplots,
+            # expressed as a fraction of the average axis height
+            )
+    bw = 0.9
+    x_range = np.arange(len(lt))
+    p_lt  = plt.bar(x_range, lt, bw)
+    p_nlt = plt.bar(x_range, nlt, bw, bottom = lt)
+
+    if splits:
+        for split in splits:
+            plt.axvline(x=split - 1.5, color="red")
+
+    plt.ylabel('Count')
+    plt.xticks(x_range, [ str(x+1) for x in x_range ], rotation = 'vertical')
+
+    plt.title(path_from_inoutfile(infile))
+    plt.xlim((-1, len(lt)))
+    plt.ylim((0, max_count))
+    pdf.savefig()
+    plt.clf()
+
+def get_excluded_columns(aln):
+    if len(aln) < 1:
+        return []
+    return [ pos for pos in range(len(aln[0].seq)) if aln[0].seq[pos].islower() or aln[0].seq[pos] in ['-','.'] ]
+
+def mask_ex_cols(gap_stats, ex_cols):
+    for (nlt, lt), ex in zip(gap_stats, ex_cols):
+        for ex_pos in ex:
+            nlt[ex_pos] = 0
+            lt[ex_pos] = 0
+
+####################################################################################################
+# MAIN PROGRAM FLOW
+####################################################################################################
+
+if Path(args.outfile).exists():
+    print("Output file '" + args.outfile + "' exists. Aborting.", file = sys.stderr)
+    sys.exit(1)
+
+alns = [ read_input_file(infile) for infile in args.infiles ]
+ex_cols = [ get_excluded_columns(aln) for aln in alns ]
+lens = [ len(aln) for aln in alns ]
+gap_stats = [ gen_gap_stats(aln, args.cpos) for aln in alns ]
+max_count = max([ max(p) for p in [ (max(x), max(y)) for x, y in gap_stats ] ])
+
+if not args.allcols:
+    mask_ex_cols(gap_stats, ex_cols)
+
+with PdfPages(args.outfile) as pdf:
+    for (nlt, lt), infile in zip(gap_stats, args.infiles):
+        gen_plot(nlt, lt, max_count, infile, pdf, args.cpos)
+    for (nlt, lt), infile, nrows in zip(gap_stats, args.infiles, lens):
+        gen_plot(nlt/float(nrows), lt/float(nrows), 1.05, infile, pdf, args.cpos)
