@@ -92,6 +92,7 @@ def split_gaps(any_gaps):
 def gen_gap_stats(aln, cpos):
     any_gaps     = np.asanyarray([ id_gaps(rec.seq) for rec in aln ])
     if cpos:
+        cpos = [ x - 1 for x in cpos ] # User specifies 1-based, internal handling is 0-based
         cpos = [0] + [ elem for elem in cpos if elem != 0 and elem != any_gaps.shape[1] ]+ [any_gaps.shape[1]]
         any_gaps = [ any_gaps[:,f:t] for f,t in zip(cpos, cpos[1:]) ]
     else:
