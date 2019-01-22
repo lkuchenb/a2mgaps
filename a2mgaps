@@ -35,6 +35,7 @@ class A2MParseError(RuntimeError) : pass
 
 parser = argparse.ArgumentParser(description='Generate gap plots from FASTA / A2M alignment files')
 parser.add_argument('--allcols', dest='allcols', action='store_true', help = "Include all columns in the plot (also lower case characters)")
+parser.add_argument('--printvals', dest='printvals', action='store_true', help = "Print the numeric values in TSV format to STDOUT")
 parser.add_argument('--cpos', dest='cpos', type=int, nargs='+', help = "Concatenation position(s) for concatenated MSAs.")
 parser.add_argument('outfile', metavar = 'outfile', type=str,
                     help='PDF output file')
@@ -163,6 +164,15 @@ max_count = max([ max(p) for p in [ (max(x), max(y)) for x, y in gap_stats ] ])
 
 if not args.allcols:
     mask_ex_cols(gap_stats, ex_cols)
+
+if args.printvals:
+    print("filename	position	count	gaptype")
+    for (nlt, lt), infile in zip(gap_stats, args.infiles):
+        inpath = path_from_inoutfile(infile)
+        for pos, count in zip(range(len(nlt)), nlt):
+            print(inpath + "	" + str(pos+1) + "	" + str(count) + "	intermediate")
+        for pos, count in zip(range(len(lt)), lt):
+            print(inpath + "	" + str(pos+1) + "	" + str(count) + "	lead_trail")
 
 with PdfPages(args.outfile) as pdf:
     for (nlt, lt), infile in zip(gap_stats, args.infiles):
